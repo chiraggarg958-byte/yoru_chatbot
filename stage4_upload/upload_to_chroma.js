@@ -71,12 +71,13 @@ for (let i = 0; i < embeddings.length; i += BATCH_SIZE) {
   const texts = batch.map(b => b.text);
 
   // IMPORTANT: Upload full metadata — no null values allowed
-  const metas = batch.map(b => ({
-    source: b.source,
-    pdf: b.pdf,
-    pdf_url: b.pdf_url,
-    module: b.module ?? "" // ensure always string
-  }));
+ const metas = batch.map(b => ({
+  source_page: b.source_page || b.source || "",
+  source_file: b.source_file || b.pdf || "",
+  semester: b.semester || "",
+  pdf_url: ""
+}));
+
 
   const vectors = batch.map(b => b.embedding);
 
