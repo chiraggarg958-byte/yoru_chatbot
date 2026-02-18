@@ -14,3 +14,4 @@ stage3_embeddings2/embeddings.json
 
 chroma/
 .env 
+stage3_embeddings2/
