@@ -30,6 +30,15 @@ const ask = async () => {
     console.log("\nANSWER:");
     console.log(data.answer || "No answer returned");
 
+    // If question bank response
+    if (data.questions && data.questions.length > 0) {
+      console.log("\nQUESTION LIST:");
+      data.questions.forEach((q, i) => {
+        console.log(`${i + 1}. ${q}`);
+      });
+    }
+
+
     console.log("\nSOURCE LINK:");
     console.log(data.source_link || "No source link");
 

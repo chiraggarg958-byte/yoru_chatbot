@@ -114,6 +114,29 @@ function updateSuggested() {
 }
 
 // ==========================================
+// QUESTION LIST RENDER
+// ==========================================
+function renderQuestionList(questions) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "msg msg-bot question-wrapper";
+
+  questions.forEach((q, index) => {
+    const item = document.createElement("div");
+    item.className = "question-item";
+    item.textContent = `${index + 1}. ${q}`;
+
+    item.onclick = () => {
+      askChat(q);   // Reuse your main function
+    };
+
+    wrapper.appendChild(item);
+  });
+
+  chatBox.appendChild(wrapper);
+  scrollBottom(true);
+}
+
+// ==========================================
 // HISTORY
 // ==========================================
 function addHistory(q) {
@@ -196,6 +219,11 @@ async function askChat(prefill) {
     }
 
     appendBot(finalAnswer);
+
+    if (data.questions && data.questions.length > 0) {
+      renderQuestionList(data.questions);
+}
+
   } catch (e) {
     hideTyping();
     appendError("Could not reach backend.");
