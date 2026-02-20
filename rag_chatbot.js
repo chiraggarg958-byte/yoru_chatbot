@@ -343,7 +343,17 @@ Classify into EXACTLY one label:
 SMALL_TALK
 DIRECT_NOTES_REQUEST
 NOTES_QUERY
+QUESTION_BANK_REQUEST
 OTHER
+
+If the user asks for:
+- question bank
+- module questions
+- list of questions
+- questions of module
+- show questions
+
+Return QUESTION_BANK_REQUEST.
 
 Return ONLY the label.
 
@@ -525,6 +535,165 @@ app.get("/health", async (req, res) => {
 });
 
 // ---------------------------------------------------------
+// QUESTION BANK ENGINE
+// ---------------------------------------------------------
+
+function extractPageNumber(source) {
+  if (!source) return 0;
+  const match = source.match(/__page_(\d+)/i);
+  return match ? parseInt(match[1]) : 0;
+}
+
+async function getQuestionBank(subject, moduleNumber) {
+  if (!subject || !moduleNumber) {
+    return { questions: [], error: "Subject or module missing" };
+  }
+
+  const subjectKeywords = SUBJECT_MAP[subject]?.keywords || [];
+
+  const collection = await chroma.getCollection({ name: "rag_academic_docs" });
+
+  const results = await collection.get({
+    limit: 10000,
+    include: ["documents", "metadatas"]
+  });
+
+  const docs = results.documents || [];
+  const metas = results.metadatas || [];
+
+  let allChunks = [];
+
+  for (let i = 0; i < docs.length; i++) {
+    const metaSource =
+      metas[i]?.source_file?.toLowerCase() ||
+      metas[i]?.source_page?.toLowerCase() ||
+      "";
+
+    const isQuestionBank = metaSource.includes("question_bank");
+
+    const matchesSubject = subjectKeywords.some(keyword =>
+      metaSource.includes(keyword.toLowerCase().replace(/ /g, "_"))
+    );
+
+    if (isQuestionBank && matchesSubject) {
+      allChunks.push({
+        document: docs[i],
+        metadata: metas[i]
+      });
+    }
+  }
+
+  if (allChunks.length === 0) {
+    return { questions: [], error: "No chunks found" };
+  }
+
+  // ✅ Correct page sorting (use source_file or source_page)
+  allChunks.sort((a, b) => {
+    const pageA = extractPageNumber(
+      a.metadata?.source_file || a.metadata?.source_page
+    );
+    const pageB = extractPageNumber(
+      b.metadata?.source_file || b.metadata?.source_page
+    );
+    return pageA - pageB;
+  });
+
+  let fullText = allChunks.map(c => c.document).join("\n");
+
+  const moduleRegex = new RegExp(`module\\s*[- ]?\\s*${moduleNumber}`, "i");
+  const nextModuleRegex = new RegExp(`module\\s*[- ]?\\s*${moduleNumber + 1}`, "i");
+
+  const startMatch = fullText.match(moduleRegex);
+
+  if (!startMatch) {
+    return { questions: [], error: "Module not found in question bank" };
+  }
+
+  const startIndex = startMatch.index;
+  const remainingText = fullText.slice(startIndex);
+
+  const nextMatch = remainingText.match(nextModuleRegex);
+
+  let moduleText;
+  if (nextMatch) {
+    moduleText = remainingText.slice(0, nextMatch.index);
+  } else {
+    moduleText = remainingText;
+  }
+
+  // Remove answers
+  moduleText = moduleText.replace(/answer\s*:\s*[A-D]/gi, "");
+
+  // Remove MCQ options
+  moduleText = moduleText.replace(/(^|\n)\s*[A-D]\.\s.*?/g, "");
+  moduleText = moduleText.replace(/(^|\n)\s*\([a-d]\)\s.*?/gi, "");
+
+  // Remove noisy numeric postfix fragments (PDF artifact cleanup)
+  moduleText = moduleText.replace(/\b\d+(\s+\d+){3,}.*?(?=ii\.|iii\.|iv\.|$)/gi, "");
+
+  // Split questions
+  let questions = moduleText.split(/\b\d{1,3}\.\s+/g);
+
+
+  questions = questions
+    .map(q => q.replace(/\n/g, " ").replace(/\s+/g, " ").trim())
+    .filter(q =>
+      q.length > 25 &&
+      !q.toLowerCase().startsWith("module") &&
+      !q.toLowerCase().includes("question bank")
+    );
+
+  // ✅ Intelligent duplicate removal (better than Set)
+  const uniqueQuestions = [];
+
+  for (let q of questions) {
+    const isDuplicate = uniqueQuestions.some(existing => {
+      const similarity = stringSimilarity.compareTwoStrings(q, existing);
+      return similarity > 0.85;
+    });
+
+    if (!isDuplicate) {
+      uniqueQuestions.push(q);
+    }
+  }
+
+  return { questions: uniqueQuestions };
+}
+
+app.get("/test-qb", async (req, res) => {
+  try {
+    const subject = "dsa";  // must match SUBJECT_MAP key
+    const module = 1;
+
+    const data = await getQuestionBank(subject, module);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//temprovary
+app.get("/debug-all", async (req, res) => {
+  try {
+    const collection = await chroma.getCollection({ name: "rag_academic_docs" });
+
+    const results = await collection.get({
+      limit: 20,
+      include: ["documents", "metadatas"]
+    });
+
+    res.json({
+      documentCount: results.documents?.length || 0,
+      metadataSample: results.metadatas?.slice(0, 5)
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ---------------------------------------------------------
 // CHAT ENDPOINT
 // ---------------------------------------------------------
 app.post("/chat", async (req, res) => {
@@ -578,6 +747,45 @@ app.post("/chat", async (req, res) => {
       });
     }
 
+    // ---------------------------------------------------------
+    // QUESTION BANK REQUEST
+    // ---------------------------------------------------------
+    if (category === "QUESTION_BANK_REQUEST") {
+
+      const module = extractModule(question);
+
+      if (!subject || !module) {
+        return res.json({
+          question,
+          answer: "Please specify subject and module number.",
+          source_label: null,
+          source_link: null,
+          youtube_links: []
+        });
+      }
+
+      const data = await getQuestionBank(subject, module);
+
+      if (data.error) {
+        return res.json({
+          question,
+          answer: data.error,
+          source_label: null,
+          source_link: null,
+          youtube_links: []
+        });
+      }
+
+      return res.json({
+        question,
+        answer: "Here are the questions:",
+        questions: data.questions,
+        source_label: null,
+        source_link: null,
+        youtube_links: []
+      });
+    }
+
     // NOTES QUERY
     if (category === "NOTES_QUERY") {
       const { documents: docs, metadatas: metas } = await retrieveWithReranking(question);
@@ -585,32 +793,28 @@ app.post("/chat", async (req, res) => {
       const context = cleanContext(docs.join("\n\n"));
       const answer = await runLLM(question, context);
 
-    let sourceLabel = null;
-let sourceLink = null;
+      let sourceLabel = null;
+      let sourceLink = null;
 
-const meta = metas[0] || {};
+      const meta = metas[0] || {};
 
-// page json name stored in chroma metadata
-const pageSource =
-  meta.source ||
-  meta.pdf ||
-  meta.source_page ||
-  "";
+      const pageSource =
+        meta.source ||
+        meta.pdf ||
+        meta.source_page ||
+        meta.source_file ||
+        "";
 
-// show source label
-if (pageSource) {
-  sourceLabel = pageSource;
-}
+      if (pageSource) {
+        sourceLabel = pageSource;
+      }
 
-// map pageSource -> pdf drive link using fuzzy match
-if (pageSource && Object.keys(fileIndex).length > 0) {
-  const bestPdfKey = findSmartFile(pageSource, fileIndex);
-  if (bestPdfKey) {
-    sourceLink = fileIndex[bestPdfKey] || null;
-  }
-}
-
-
+      if (pageSource && Object.keys(fileIndex).length > 0) {
+        const bestPdfKey = findSmartFile(pageSource, fileIndex);
+        if (bestPdfKey) {
+          sourceLink = fileIndex[bestPdfKey] || null;
+        }
+      }
 
       return res.json({
         question,
@@ -635,6 +839,7 @@ if (pageSource && Object.keys(fileIndex).length > 0) {
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // ---------------------------------------------------------
 app.listen(4000, () => {
