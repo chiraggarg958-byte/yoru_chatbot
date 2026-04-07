@@ -2,3 +2,4 @@ node_modules
 stage3_embeddings2/embeddings_v2.json
 stage3_embeddings2/embeddings_v2.json
 stage3_embeddings2/embeddings_v2.json
+.env
