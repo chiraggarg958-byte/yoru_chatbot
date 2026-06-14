@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { ChromaClient } from "chromadb";
 import OpenAI from "openai";
 import fetch from "node-fetch";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import stringSimilarity from "string-similarity";
 import session from "express-session";
 import passport from "passport";
@@ -55,7 +56,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
       {
         clientID: process.env.GOOGLE_CLIENT_ID,
         clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: "http://localhost:4000/auth/google/callback",
+        callbackURL: process.env.GOOGLE_CALLBACK_URL || "http://localhost:4000/auth/google/callback",
       },
       (accessToken, refreshToken, profile, done) => {
         const user = {
@@ -89,7 +90,8 @@ app.use(
         "http://127.0.0.1:4000",
         "http://127.0.0.1:5500",
         "http://127.0.0.1:5501",
-      ];
+        process.env.APP_URL,
+      ].filter(Boolean);
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
@@ -114,8 +116,15 @@ if (!process.env.GROQ_API_KEY) {
   console.error("GROQ_API_KEY missing in .env");
   process.exit(1);
 }
-const CHROMA_URL = process.env.CHROMA_URL || "http://localhost:8000";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+if (!process.env.GEMINI_API_KEY) {
+  console.error("GEMINI_API_KEY missing in .env");
+  process.exit(1);
+}
+// ChromaDB: use persistent local path (ships with the repo)
+const CHROMA_PATH = process.env.CHROMA_PATH || path.join(__dirname, "chroma");
+
+// Init Gemini for embeddings
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // ---------------------------------------------------------
 // FILE INDEX
 // ---------------------------------------------------------
@@ -386,25 +395,16 @@ const groq = new OpenAI({
 const LLM_MODEL = "llama-3.1-8b-instant";
 
 // ---------------------------------------------------------
-// OLLAMA EMBEDDINGS
+// GEMINI EMBEDDINGS (replaces Ollama nomic-embed-text)
 // ---------------------------------------------------------
 async function embedQuery(text) {
-  const r = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "nomic-embed-text",
-      prompt: text,
-    }),
-  });
-
-  const data = await r.json();
-
-  if (!data.embedding) {
-    throw new Error("Ollama embedding failed: " + JSON.stringify(data));
+  const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+  const result = await model.embedContent(text);
+  const embedding = result.embedding.values;
+  if (!embedding || embedding.length === 0) {
+    throw new Error("Gemini embedding failed: empty result");
   }
-
-  return data.embedding;
+  return embedding;
 }
 
 function cleanContext(text) {
@@ -506,10 +506,10 @@ Reply:
 }
 
 // ---------------------------------------------------------
-// CHROMA CLIENT
+// CHROMA CLIENT (persistent local path — no separate server needed)
 // ---------------------------------------------------------
 const chroma = new ChromaClient({
-  path: CHROMA_URL,
+  path: CHROMA_PATH,
 });
 
 // ---------------------------------------------------------
@@ -658,11 +658,10 @@ app.get(
 app.get(
   "/auth/google/callback",
   passport.authenticate("google", {
-    failureRedirect: "http://localhost:4000/#/login",
+    failureRedirect: (process.env.APP_URL || "http://localhost:4000") + "/#/login",
   }),
   (req, res) => {
-    // Successful authentication, redirect to frontend (served from same port)
-    res.redirect("http://localhost:4000/");
+    res.redirect(process.env.APP_URL || "http://localhost:4000");
   },
 );
 
@@ -693,14 +692,10 @@ app.get("/auth/logout", (req, res) => {
 // ---------------------------------------------------------
 app.get("/health", async (req, res) => {
   try {
-    const ollamaCheck = await fetch(`${OLLAMA_URL}/api/tags`);
-    const okOllama = ollamaCheck.ok;
-
     res.json({
       status: "ok",
-      chroma: CHROMA_URL,
-      ollama: OLLAMA_URL,
-      ollama_ok: okOllama,
+      chroma_path: CHROMA_PATH,
+      embedding_provider: "gemini text-embedding-004",
       timestamp: new Date().toISOString(),
     });
   } catch (e) {
@@ -1034,10 +1029,11 @@ app.get("/{*path}", (req, res) => {
 });
 
 // ---------------------------------------------------------
-app.listen(4000, () => {
-  console.log("✅ RAG Chatbot running at http://localhost:4000");
-  console.log("📂 Frontend served at http://localhost:4000/");
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`✅ RAG Chatbot running at http://localhost:${PORT}`);
+  console.log(`📂 Frontend served at http://localhost:${PORT}/`);
   console.log("Groq model:", LLM_MODEL);
-  console.log("Chroma:", CHROMA_URL);
-  console.log("Ollama:", OLLAMA_URL);
+  console.log("Chroma path:", CHROMA_PATH);
+  console.log("Embeddings: Gemini text-embedding-004");
 });

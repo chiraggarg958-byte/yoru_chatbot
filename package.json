@@ -2,10 +2,13 @@
   "name": "rag_project",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
+  "main": "rag_chatbot.js",
   "scripts": {
     "start": "node rag_chatbot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [],
   "author": "",
