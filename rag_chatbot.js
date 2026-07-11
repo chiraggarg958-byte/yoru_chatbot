@@ -509,7 +509,9 @@ Reply:
 // CHROMA CLIENT (persistent local path — no separate server needed)
 // ---------------------------------------------------------
 const chroma = new ChromaClient({
-  path: CHROMA_PATH,
+  host: "localhost",
+  port: 8000,
+  ssl: false,
 });
 
 // ---------------------------------------------------------
